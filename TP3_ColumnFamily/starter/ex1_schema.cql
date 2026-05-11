@@ -5,8 +5,8 @@
 -- TODO: Créer le keyspace 'smartgrid' avec NetworkTopologyStrategy
 -- replication_factor: 3 (pour la production), 1 (pour le TP local)
 
--- CREATE KEYSPACE smartgrid
--- WITH replication = { ??? };
+CREATE KEYSPACE IF NOT EXISTS smartgrid
+WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
 
 USE smartgrid;
 
@@ -17,7 +17,7 @@ USE smartgrid;
 
 CREATE TABLE IF NOT EXISTS mesures_par_capteur (
   capteur_id   UUID,
-  -- TODO: Ajouter une colonne pour la date (bucket par jour)
+  date_jour    DATE,
   timestamp    TIMESTAMP,
   wilaya       TEXT,
   commune      TEXT,
@@ -28,8 +28,7 @@ CREATE TABLE IF NOT EXISTS mesures_par_capteur (
   temperature  FLOAT,
   alerte       BOOLEAN,
   code_alerte  TEXT,
-  -- TODO: Définir PRIMARY KEY ((partition), clustering...)
-  PRIMARY KEY (???)
+  PRIMARY KEY ((capteur_id, date_jour), timestamp)
 ) WITH CLUSTERING ORDER BY (timestamp DESC)
   AND default_time_to_live = 7776000;  -- 90 jours en secondes
 
@@ -47,8 +46,7 @@ CREATE TABLE IF NOT EXISTS alertes_par_wilaya (
   description  TEXT,
   gravite      INT,   -- 1=info, 2=warning, 3=critique
   resolue      BOOLEAN,
-  -- TODO: PRIMARY KEY
-  PRIMARY KEY (???)
+  PRIMARY KEY ((wilaya, date_jour), timestamp, capteur_id)
 ) WITH CLUSTERING ORDER BY (timestamp DESC)
   AND default_time_to_live = 31536000;  -- 1 an
 
@@ -65,8 +63,7 @@ CREATE TABLE IF NOT EXISTS agregats_horaires (
   puissance_max_kw  FLOAT,
   puissance_min_kw  FLOAT,
   nb_alertes        INT,
-  -- TODO: PRIMARY KEY
-  PRIMARY KEY (???)
+  PRIMARY KEY ((wilaya), date_heure)
 ) WITH CLUSTERING ORDER BY (date_heure DESC)
   AND default_time_to_live = 157680000;  -- 5 ans
 

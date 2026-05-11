@@ -57,7 +57,40 @@ def insert_single(session, mesure):
     TODO: Insérer une seule mesure dans mesures_par_capteur
     Utiliser une prepared statement
     """
-    pass
+    if not hasattr(insert_single, "_prepared"):
+        insert_single._prepared = session.prepare(
+            "INSERT INTO mesures_par_capteur (capteur_id, date_jour, timestamp, wilaya, commune, tension_v, courant_a, puissance_kw, frequence_hz, temperature, alerte, code_alerte) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL 7776000"
+        )
+
+    code_alerte = None
+    if mesure["alerte"]:
+        if mesure["tension_v"] < 200:
+            code_alerte = "LOW_VOLT"
+        elif mesure["tension_v"] > 240:
+            code_alerte = "HIGH_VOLT"
+        elif mesure["temperature"] > 60:
+            code_alerte = "OVERHEAT"
+        else:
+            code_alerte = "GEN"
+
+    session.execute(
+        insert_single._prepared,
+        (
+            mesure["capteur_id"],
+            mesure["date_jour"],
+            mesure["timestamp"],
+            mesure["wilaya"],
+            mesure["commune"],
+            mesure["tension_v"],
+            mesure["courant_a"],
+            mesure["puissance_kw"],
+            mesure["frequence_hz"],
+            mesure["temperature"],
+            mesure["alerte"],
+            code_alerte,
+        ),
+    )
 
 
 def insert_batch(session, mesures: list):
@@ -66,7 +99,80 @@ def insert_batch(session, mesures: list):
     Utiliser UNLOGGED BATCH pour les séries temporelles
     Faire des batches de max 50 items (bonne pratique Cassandra)
     """
-    pass
+    if not hasattr(insert_batch, "_prepared_mesure"):
+        insert_batch._prepared_mesure = session.prepare(
+            "INSERT INTO mesures_par_capteur (capteur_id, date_jour, timestamp, wilaya, commune, tension_v, courant_a, puissance_kw, frequence_hz, temperature, alerte, code_alerte) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?"
+        )
+        insert_batch._prepared_alerte = session.prepare(
+            "INSERT INTO alertes_par_wilaya (wilaya, date_jour, timestamp, capteur_id, code_alerte, description, gravite, resolue) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?"
+        )
+
+    max_batch = 50
+    for i in range(0, len(mesures), max_batch):
+        chunk = mesures[i : i + max_batch]
+        batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+
+        for mesure in chunk:
+            code_alerte = None
+            gravite = 1
+            description = None
+
+            if mesure["alerte"]:
+                if mesure["tension_v"] < 200:
+                    code_alerte = "LOW_VOLT"
+                    gravite = 3
+                    description = "Tension < 200V"
+                elif mesure["tension_v"] > 240:
+                    code_alerte = "HIGH_VOLT"
+                    gravite = 3
+                    description = "Tension > 240V"
+                elif mesure["temperature"] > 60:
+                    code_alerte = "OVERHEAT"
+                    gravite = 2
+                    description = "Température > 60°C"
+                else:
+                    code_alerte = "GEN"
+                    gravite = 1
+                    description = "Alerte générique"
+
+            batch.add(
+                insert_batch._prepared_mesure,
+                (
+                    mesure["capteur_id"],
+                    mesure["date_jour"],
+                    mesure["timestamp"],
+                    mesure["wilaya"],
+                    mesure["commune"],
+                    mesure["tension_v"],
+                    mesure["courant_a"],
+                    mesure["puissance_kw"],
+                    mesure["frequence_hz"],
+                    mesure["temperature"],
+                    mesure["alerte"],
+                    code_alerte,
+                    7776000,
+                ),
+            )
+
+            if mesure["alerte"]:
+                batch.add(
+                    insert_batch._prepared_alerte,
+                    (
+                        mesure["wilaya"],
+                        mesure["date_jour"],
+                        mesure["timestamp"],
+                        mesure["capteur_id"],
+                        code_alerte,
+                        description,
+                        gravite,
+                        False,
+                        31536000,
+                    ),
+                )
+
+        session.execute(batch)
 
 
 def run_ingestion(session):
@@ -83,7 +189,21 @@ def run_ingestion(session):
     print(f"Démarrage ingestion : {NB_CAPTEURS} capteurs × {MINUTES_HISTORIQUE} min")
     start = time.time()
     
-    # TODO: Implémenter
+    capteurs = []
+    for i in range(NB_CAPTEURS):
+        capteur_id = uuid.uuid4()
+        wilaya = WILAYAS[i % len(WILAYAS)]
+        commune = COMMUNES[wilaya][i % len(COMMUNES[wilaya])]
+        capteurs.append((capteur_id, wilaya, commune))
+
+    now = datetime.utcnow()
+    for minute_offset in range(MINUTES_HISTORIQUE):
+        ts = now - timedelta(minutes=minute_offset)
+        mesures = []
+        for capteur_id, wilaya, commune in capteurs:
+            m = generate_mesure(capteur_id, wilaya, commune, ts)
+            mesures.append(m)
+        insert_batch(session, mesures)
     
     elapsed = time.time() - start
     total = NB_CAPTEURS * MINUTES_HISTORIQUE
